@@ -291,8 +291,8 @@ pure_profit = 0
 
 df = get_history_klines(
     symbol="BTCUSDT",
-    interval=Client.KLINE_INTERVAL_15MINUTE,
-    start_str="2025-01-01 00:00:00",
+    interval=Client.KLINE_INTERVAL_1HOUR,
+    start_str="2025-06-01 00:00:00",
     end_str="2025-12-01 06:00:00"
 )
 
@@ -300,7 +300,7 @@ while Trade:
     
     df, df_plot, buy_info, sell_info, Trade, Profit_percent, win = Strategy(df)
 
-    #plot_graph(df_plot,buy_info,sell_info)
+    plot_graph(df_plot,buy_info,sell_info)
 
     
     count += 1
@@ -333,3 +333,4 @@ print(f'Average Profit: {(pure_profit/count):.2f} %')
 print(f'Average Loss: {(pure_loss/count):.2f} %')
 print(f'Final Profit: {Cummulative_profit:.2f} %') 
     
+
