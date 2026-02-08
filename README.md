@@ -25,4 +25,4 @@ A simple **quantitative trading strategy** for BTC/USDT using **EMA** and **RSI*
 
 ```bash
 pip install pandas numpy ta mplfinance python-binance
-python main.py
+python 量化策略1.py
