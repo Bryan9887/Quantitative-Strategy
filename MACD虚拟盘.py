@@ -56,7 +56,8 @@ class Bitcoin():
         self.macd_top = None
         self.macd_bottom = None
 
-        self.macd_greater= False
+        self.macd_greater_long = False
+        self.macd_greater_short= False
         self.trend_side = "SKIP"
         self.Long_pre1 = False
         self.Long_pre2 = False
@@ -65,8 +66,6 @@ class Bitcoin():
         self.entry_price = 0
         self.entry_index = 0
         self.position = None  # LONG / SHORT
-        self.long_invalid_price = None
-        self.short_invalid_price = None
         self.long_tp = None
         self.long_sl = None
         self.short_tp = None
@@ -81,6 +80,7 @@ class Bitcoin():
 
     def add_sma(self):
         self.df[f'sma{self.sma_window}'] = self.df["close"].rolling(self.sma_window).mean()
+        #self.df["vol_ma"] = self.df["volume"].rolling(10).mean()
 
     def add_rsi(self, window):
         self.df[f'rsi{window}'] = ta.momentum.RSIIndicator(
@@ -99,64 +99,6 @@ class Bitcoin():
         self.df['macd_hist'] = macd.macd_diff()
     
 
-    def add_macd_peak(self, price_window=5):
-
-        if 'macd' not in self.df.columns:
-            raise ValueError("Run add_macd() first.")
-
-        macd = self.df['macd']
-        window = self.macd_window * 2 + 1
-
-        rolling_max = macd.rolling(window=window, center=True).max()
-        rolling_min = macd.rolling(window=window, center=True).min()
-
-        is_top = macd == rolling_max
-        is_bottom = macd == rolling_min
-
-        self.df['macd_top'] = np.where(is_top, macd, None)
-        self.df['macd_bottom'] = np.where(is_bottom, macd, None)
-
-        # 价格列（你可以改成 close）
-        high = self.df['close']
-        low = self.df['close']
-
-        # 初始化
-        self.df['macd_top_price'] = None
-        self.df['macd_bottom_price'] = None
-
-        # ===== 处理 TOP =====
-        top_indices = self.df.index[is_top]
-
-        for idx in top_indices:
-
-            loc = self.df.index.get_loc(idx)
-
-            start = max(0, loc - price_window)
-            end = min(len(self.df) - 1, loc + price_window)
-
-            price_slice = high.iloc[start:end+1]
-            real_high = price_slice.max()
-
-            # 🔥 存回 MACD peak 那根
-            self.df.loc[idx, 'macd_top_price'] = real_high
-
-
-        # ===== 处理 BOTTOM =====
-        bottom_indices = self.df.index[is_bottom]
-
-        for idx in bottom_indices:
-
-            loc = self.df.index.get_loc(idx)
-
-            start = max(0, loc - price_window)
-            end = min(len(self.df) - 1, loc + price_window)
-
-            price_slice = low.iloc[start:end+1]
-            real_low = price_slice.min()
-
-            # 🔥 存回 MACD peak 那根
-            self.df.loc[idx, 'macd_bottom_price'] = real_low
-
     def check_latest_macd_peak(self, price_window=5):
         """
         每次调用只检查倒数第1 - macd_window的K线是否是MACD peak。
@@ -170,15 +112,18 @@ class Bitcoin():
         pivot_macd = self.df["macd"].iloc[pivot_idx]
 
         # +/- macd_window 判断局部 max/min
-        start = max(0, pivot_idx - self.macd_window)
-        end = min(len(self.df), pivot_idx + self.macd_window + 1)
+        start = pivot_idx - self.macd_window
+        end = pivot_idx + self.macd_window
+        
         macd_slice = self.df["macd"].iloc[start:end]
 
         # +/- price_window 找对应价格
-        price_start = max(0, pivot_idx - price_window)
-        price_end = min(len(self.df), pivot_idx + price_window + 1)
+        price_start = pivot_idx - price_window
+        price_end = pivot_idx + price_window
         price_slice = self.df["close"].iloc[price_start:price_end]
 
+        #print("Max:",round(macd_slice.max(),1),"Min:",round(macd_slice.min(),1),"Pivot:",round(pivot_macd,1))
+        print("Pivot Time: ",self.df.index[pivot_idx])
         # 判断 MACD TOP
         if pivot_macd == macd_slice.max():
             return {
@@ -199,54 +144,6 @@ class Bitcoin():
 
         return None  # 没有peak
 
-    def add_volume_ma(self, window):
-        self.df[f'vol_ma'] = self.df['volume'].rolling(window).mean()
-
-    # ==================
-    # Get Klines
-    # ==================
-    def get_history_klines(self, symbol, interval, start_str, end_str=None):
-
-        df_all = []
-
-        start_ts = int(pd.to_datetime(start_str).timestamp() * 1000)
-        end_ts = int(pd.to_datetime(end_str).timestamp() * 1000) if end_str else None
-
-        while True:
-            klines = client.get_klines(
-                symbol=symbol,
-                interval=interval,
-                startTime=start_ts,
-                endTime=end_ts,
-                limit=500
-            )
-
-            if not klines:
-                break
-
-            df = pd.DataFrame(klines, columns=[
-                "open_time","open","high","low","close","volume",
-                "close_time","quote_asset_volume","number_of_trades",
-                "taker_buy_base","taker_buy_quote","ignore"
-            ])
-
-            df_all.append(df)
-
-            start_ts = klines[-1][6] + 1
-
-            if end_ts and start_ts >= end_ts:
-                break
-
-        df = pd.concat(df_all, ignore_index=True)
-
-        for col in ["open","high","low","close","volume"]:
-            df[col] = df[col].astype(float)
-
-        df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
-        df.set_index("open_time", inplace=True)
-
-        return df
-    
     # ======================
     # Klines
     # ======================
@@ -263,118 +160,28 @@ class Bitcoin():
         df.set_index("time", inplace=True)
         self.df = df
 
-    
 # ==================
 # Strategy
 # ==================
     def Strategy(self):
 
-
-        timestamp = self.df.index[i] + pd.Timedelta(hours=8)
-
-
-        # ===== Top =======
-        if pd.notna(self.df["macd_top"].iloc[i]):
-
-            # pivot 所在 index
-            pivot_loc = self.df.index.get_loc(self.df.index[i])
-
-            start = max(0, pivot_loc - (self.macd_window+0))
-            end = pivot_loc
-
-            # 往前 window 根K 找最低价
-            price_slice = self.df["low"].iloc[start:end+1]
-            start_price = price_slice.min()
-
-            macd_top = {
-                "i": i,
-                "index": self.df.index[i],
-                "macd": self.df["macd_top"].iloc[i],
-                "price": self.df["macd_top_price"].iloc[i],
-                "sma": self.df[f"sma{self.sma_window}"].iloc[i],
-                "start_price": start_price
-            }
-
-            # === 计算 80% 回撤失效价 ===
-            swing_size = macd_top["price"] - macd_top["start_price"]
-
-            if swing_size > 0:
-                self.long_invalid_price = macd_top["price"] - swing_size * self.invalid_drawback
-            else:
-                self.long_invalid_price = None
-
-            # === greater than the previous macd peak , and reject extreme macd
-            if macd_top["macd"] > self.pre_macd_top["macd"] * self.macd_greater_threshold and macd_top["macd"] < macd_top["price"] * 0.015:
-                self.macd_greater= True
-            else:
-                self.macd_greater= False
-
-            self.pre_macd_top = macd_top
-
-            if abs(macd_top["price"] - macd_top["sma"]) > abs(self.pre_macd_bottom["price"] - self.pre_macd_bottom["sma"]):
-                self.trend_side = "LONG"
-            else: 
-                self.trend_side = "SKIP"
-
-            #print("Top   : ",self.df.index[i], self.df["macd_top"].iloc[i], self.df["macd_top_price"].iloc[i],macd_greater,self.trend_side)
-
-        # ======== Bottom ========
-        if pd.notna(self.df["macd_bottom"].iloc[i]):
-
-            pivot_loc = self.df.index.get_loc(self.df.index[i])
-
-            start = max(0, pivot_loc - (self.macd_window+0))
-            end = pivot_loc
-
-            # 往前 window 根K 找最高价
-            price_slice = self.df["high"].iloc[start:end+1]
-            start_price = price_slice.max()
-
-            macd_bottom = {
-                "i": i,
-                "index": self.df.index[i],
-                "macd": self.df["macd_bottom"].iloc[i],
-                "price": self.df["macd_bottom_price"].iloc[i],
-                "sma": self.df[f"sma{self.sma_window}"].iloc[i],
-                "start_price": start_price
-            }
-
-            swing_size = macd_bottom["start_price"] - macd_bottom["price"]
-
-            if swing_size > 0:
-                self.short_invalid_price = macd_bottom["price"] + swing_size * self.invalid_drawback
-            else:
-                self.short_invalid_price = None
-
-            
-            # === greater than the previous macd peak, reject extreme macd
-            if macd_bottom["macd"] < self.pre_macd_bottom["macd"] * self.macd_greater_threshold and macd_bottom["macd"] > -macd_bottom["price"] * 0.015:
-                self.macd_greater= True
-            else:
-                self.macd_greater= False
-
-            self.pre_macd_bottom = macd_bottom
-
-            if abs(macd_bottom["price"] - macd_bottom["sma"]) > abs(self.pre_macd_top["price"] - self.pre_macd_top["sma"]):
-                self.trend_side = "SHORT"
-            else: 
-                self.trend_side = "SKIP"
-
-            #print("Bottom: ",self.df.index[i], self.df["macd_bottom"].iloc[i], self.df["macd_bottom_price"].iloc[i],macd_greater,self.trend_side)
-
         macd_peak = self.check_latest_macd_peak()
+
+        pivot_idx = -1 - self.macd_window  # 倒数第1 - macd_window
 
         if macd_peak is not None:
             if macd_peak["peak"] == "top":
-                if self.macd_top is not None:
+
+                # 把旧的save去previous
+                if self.macd_top is not None and self.df.index[pivot_idx] != self.macd_top["index"]:
                     self.pre_macd_top = self.macd_top
-                
+                    print(self.pre_macd_top)
                 
 
                 start = -1 - self.macd_window * 2
                 end = -1 - self.macd_window
 
-                price_slice = self.df["low"].iloc[start:end+1]
+                price_slice = self.df["close"].iloc[start:end+1]
                 start_price = price_slice.min()
 
                 self.macd_top = {
@@ -383,15 +190,110 @@ class Bitcoin():
                     "price": macd_peak["price"],
                     "start_price": start_price,
                     "sma": self.df[f"sma{self.sma_window}"].iloc[-1-self.macd_window],
+                    "invalid_price": macd_peak["price"]  - self.invalid_drawback * (macd_peak["price"] - start_price)
                 }
 
+                '''
+                print(
+                    f'| Macd_Top:{round(self.macd_top["macd"],1)} '
+                    f'| Price:{round(self.macd_top["price"],1)} '
+                    f'| Start_Price:{round(self.macd_top["start_price"],1)} '
+                    f'| SMA:{round(self.macd_top["sma"],1)} '
+                    f'| Invalid:{round(self.macd_top["invalid_price"],1)} '
+                )
+                #'''
+
             if macd_peak["peak"] == "bottom":
-                if self.macd_bottom is not None:
+                if self.macd_bottom is not None and self.df.index[pivot_idx] != self.macd_bottom["index"]:
                     self.pre_macd_bottom = self.macd_bottom
+                    print(self.pre_macd_bottom)
                 
-                self.macd_bottom = macd_peak
+                start = -1 - self.macd_window * 2
+                end = -1 - self.macd_window
+
+                price_slice = self.df["close"].iloc[start:end+1]
+                start_price = price_slice.max()
+
+                self.macd_bottom = {
+                    "index": self.df.index[-1-self.macd_window],
+                    "macd": macd_peak["macd"],
+                    "price": macd_peak["price"],
+                    "start_price": start_price,
+                    "sma": self.df[f"sma{self.sma_window}"].iloc[-1-self.macd_window],
+                    "invalid_price": macd_peak["price"]  + self.invalid_drawback * (macd_peak["price"] - start_price)
+                }
+
+                '''
+                print(
+                    f'| Macd_Bottom:{round(self.macd_bottom["macd"],1)} '
+                    f'| Price:{round(self.macd_bottom["price"],1)} '
+                    f'| Start_Price:{round(self.macd_bottom["start_price"],1)} '
+                    f'| SMA:{round(self.macd_bottom["sma"],1)} '
+                    f'| Invalid:{round(self.macd_bottom["invalid_price"],1)} '
+                )
+                #'''
 
 
+            
+        # 开始判断，前提是 4 个都不是none才可以开始策略
+        if self.pre_macd_bottom is not None and self.pre_macd_top is not None and self.macd_bottom is not None and self.macd_top is not None:
+            print(
+                f'| Macd_Top:{round(self.macd_top["macd"],1)} '
+                f'| Price:{round(self.macd_top["price"],1)} '
+                f'| Start_Price:{round(self.macd_top["start_price"],1)} '
+                f'| SMA:{round(self.macd_top["sma"],1)} '
+                f'| Invalid:{round(self.macd_top["invalid_price"],1)} '
+            )
+
+            print(
+                f'| Macd_Bottom:{round(self.macd_bottom["macd"],1)} '
+                f'| Price:{round(self.macd_bottom["price"],1)} '
+                f'| Start_Price:{round(self.macd_bottom["start_price"],1)} '
+                f'| SMA:{round(self.macd_bottom["sma"],1)} '
+                f'| Invalid:{round(self.macd_bottom["invalid_price"],1)} '
+            )
+
+            print(
+                f'| Pre_Macd_Top:{round(self.pre_macd_top["macd"],1)} '
+                f'| Price:{round(self.pre_macd_top["price"],1)} '
+                f'| Start_Price:{round(self.pre_macd_top["start_price"],1)} '
+                f'| SMA:{round(self.pre_macd_top["sma"],1)} '
+                f'| Invalid:{round(self.pre_macd_top["invalid_price"],1)} '
+            )
+            print(
+                f'| Pre_Macd_Bottom:{round(self.pre_macd_bottom["macd"],1)} '
+                f'| Price:{round(self.pre_macd_bottom["price"],1)} '
+                f'| Start_Price:{round(self.pre_macd_bottom["start_price"],1)} '
+                f'| SMA:{round(self.pre_macd_bottom["sma"],1)} '
+                f'| Invalid:{round(self.pre_macd_bottom["invalid_price"],1)} '
+            )
+        
+            # 最新的为多的macd
+            if self.macd_top["index"] > self.macd_bottom["index"]:
+
+                # === greater than the previous macd peak , and reject extreme macd
+                if self.macd_top["macd"] > self.pre_macd_top["macd"] * self.macd_greater_threshold and self.macd_top["macd"] < self.macd_top["price"] * 0.015:
+                    self.macd_greater_long= True
+                else:
+                    self.macd_greater_long= False
+
+                if abs(self.macd_top["price"] - self.macd_top["sma"]) > abs(self.pre_macd_bottom["price"] - self.pre_macd_bottom["sma"]):
+                    self.trend_side = "LONG"
+                else: 
+                    self.trend_side = "SKIP"
+
+            # 最新的为空的macd
+            if self.macd_top["index"] < self.macd_bottom["index"]:
+                # === greater than the previous macd peak, reject extreme macd
+                if self.macd_bottom["macd"] < self.pre_macd_bottom["macd"] * self.macd_greater_threshold and self.macd_bottom["macd"] > - self.macd_bottom["price"] * 0.015:
+                    self.macd_greater_short = True
+                else:
+                    self.macd_greater_short = False
+
+                if abs(self.macd_bottom["price"] - self.macd_bottom["sma"]) > abs(self.pre_macd_top["price"] - self.pre_macd_top["sma"]):
+                    self.trend_side = "SHORT"
+                else: 
+                    self.trend_side = "SKIP"
 
         # ======================
         # 计算当前连阳数量
@@ -418,70 +320,77 @@ class Bitcoin():
         # 入场逻辑
         # ===================
         if not self.entry:
-            # ===== LONG 80% invalidation =====
-            if self.Long_pre1 and self.long_invalid_price is not None:
-                if self.df["close"].iloc[i] <= self.long_invalid_price:
-                    self.Long_pre1 = False
-                    self.Long_pre2 = False
-                    self.macd_greater= False
-                    self.trend_side = "SKIP"      # ⭐ 加这一行
-            # ===== SHORT 80% invalidation =====
-            if self.Short_pre1 and self.short_invalid_price is not None:
-                if self.df["close"].iloc[i] >= self.short_invalid_price:
-                    self.Short_pre1 = False
-                    self.Short_pre2 = False
-                    self.macd_greater= False
-                    self.trend_side = "SKIP"      # ⭐ 加这一行
 
             # -------- 第一层 --------
-            if self.macd_greater and self.trend_side == "LONG":
+            if self.macd_greater_long and self.trend_side == "LONG":
                 self.Long_pre1 = True
                 self.Short_pre1 = False
 
-            elif self.macd_greater and self.trend_side == "SHORT":
+            elif self.macd_greater_short and self.trend_side == "SHORT":
                 self.Short_pre1 = True
                 self.Long_pre1 = False
 
 
             # -------- 第二层 RSI --------
             if self.Long_pre1:
-                if self.df["rsi14"].iloc[i] < self.entry_rsi:
+                if self.df["rsi14"].iloc[-1] < self.entry_rsi:
                     self.Long_pre2 = True
 
             if self.Short_pre1:
-                if self.df["rsi14"].iloc[i] > 100 - self.entry_rsi:
+                if self.df["rsi14"].iloc[-1] > 100 - self.entry_rsi:
                     self.Short_pre2 = True
+
+
+            # ===== LONG 80% invalidation =====
+            if self.Long_pre1:
+                if self.df["close"].iloc[-1] <= self.macd_top["invalid_price"] or self.df["close"].iloc[-1] > self.macd_top["price"]:
+                    self.Long_pre1 = False
+                    self.Long_pre2 = False
+                    self.macd_greater_long= False
+                    self.trend_side = "SKIP"      # ⭐ 加这一行
+                    self.pre_macd_top = self.macd_top 
+                    self.macd_top = None
+
+            # ===== SHORT 80% invalidation ===== 
+            if self.Short_pre1:
+                if self.df["close"].iloc[-1] >= self.macd_bottom["invalid_price"] or self.df["close"].iloc[-1] > self.macd_bottom["price"]:
+                    self.Short_pre1 = False
+                    self.Short_pre2 = False
+                    self.macd_greater_short= False
+                    self.trend_side = "SKIP"      # ⭐ 加这一行
+                    self.pre_macd_bottom = self.macd_bottom 
+                    self.macd_bottom = None
 
 
             # -------- 第三层 K线触发 --------
             # 连续2根 bullish
             if self.Long_pre2:
-                if long_streak >= self.required_bull_count:
+                if long_streak >= self.required_bull_count :
                     
                     self.entry = "LONG"
                     self.position = "LONG"
-                    self.entry_price = self.df["close"].iloc[i]
+                    self.entry_price = self.df["close"].iloc[-1]
                     self.entry_index = i
 
                     # ===== 计算止盈止损 =====
-                    swing_high = self.pre_macd_top["price"]
-                    start_price = self.pre_macd_top["start_price"]
+                    swing_high = self.macd_top["price"]
+                    start_price = self.macd_top["start_price"]
                     retracement = (swing_high - self.entry_price) / (swing_high - start_price)
 
-                    if retracement <= 0.5 and self.entry_price > self.df[f"ema{self.ema_window}"].iloc[i]: 
-                        self.long_sl = self.df[f"ema{self.ema_window}"].iloc[i]
+                    if retracement <= 0.5 and self.entry_price > self.df[f"ema{self.ema_window}"].iloc[-1] + (swing_high - start_price) * 0.1: 
+                        self.long_sl = self.df[f"ema{self.ema_window}"].iloc[-1]
                         self.long_tp = swing_high + (swing_high - start_price) * self.tp_ratio
                     else:
                         self.long_sl = swing_high - (swing_high - start_price) * self.sl_ratio
                         self.long_tp = swing_high
                     
 
-                    print(self.df.index[i], "🚀 LONG ENTRY", self.df["close"].iloc[i], "| TP: ",self.long_tp,"| SL: ",self.long_sl,"| Retracement: ",round(retracement,2))
+                    print(self.df.index[-1], "🚀 LONG ENTRY", self.df["close"].iloc[-1], "| TP: ",self.long_tp,"| SL: ",self.long_sl,"| Retracement: ",round(retracement,2))
 
                     # reset
                     self.Long_pre1 = False
                     self.Long_pre2 = False
-                    self.macd_greater= False
+                    self.macd_greater_long= False
 
 
             # 连续2根 bearish
@@ -490,16 +399,16 @@ class Bitcoin():
                     
                     self.entry = "SHORT"
                     self.position = "SHORT"
-                    self.entry_price = self.df["close"].iloc[i]
+                    self.entry_price = self.df["close"].iloc[-1]
                     self.entry_index = i
 
                     # 计算 SHORT 止盈止损
-                    swing_low = self.pre_macd_bottom["price"]
-                    start_price = self.pre_macd_bottom["start_price"]
+                    swing_low = self.macd_bottom["price"]
+                    start_price = self.macd_bottom["start_price"]
                     retracement = (self.entry_price - swing_low) / (start_price - swing_low)
                     
-                    if retracement <= 0.5 and self.entry_price < self.df[f"ema{self.ema_window}"].iloc[i]:
-                        self.short_sl = self.df[f"ema{self.ema_window}"].iloc[i]
+                    if retracement <= 0.5 and self.entry_price < self.df[f"ema{self.ema_window}"].iloc[-1] - (swing_high - start_price) * 0.1:
+                        self.short_sl = self.df[f"ema{self.ema_window}"].iloc[-1]
                         self.short_tp = swing_low + (swing_low - start_price) * self.tp_ratio
                     else:
                         self.short_sl = swing_low - (swing_low - start_price) * self.sl_ratio
@@ -507,21 +416,21 @@ class Bitcoin():
 
                     
 
-                    print(self.df.index[i], "🔻 SHORT ENTRY", self.df["close"].iloc[i], "| TP: ",self.short_tp,"| SL: ",self.short_sl,"| Retracement: ",round(retracement,2))
+                    print(self.df.index[-1], "🔻 SHORT ENTRY", self.df["close"].iloc[-1], "| TP: ",self.short_tp,"| SL: ",self.short_sl,"| Retracement: ",round(retracement,2))
                     # reset
                     self.Short_pre1 = False
                     self.Short_pre2 = False
-                    self.macd_greater = False
+                    self.macd_greater_short = False
             
 
         # ===================
         # 持仓 / 出场逻辑
         # ===================
         if self.entry == "LONG":
-            close = self.df["close"].iloc[i]
+            close = self.df["close"].iloc[-1]
             tp_hit = close >= self.long_tp
             sl_hit = close <= self.long_sl
-            rsi_exit = self.df["rsi14"].iloc[i] > self.exit_rsi
+            rsi_exit = self.df["rsi14"].iloc[-1] > self.exit_rsi
 
             if tp_hit or sl_hit or rsi_exit:
                 exit_price = close
@@ -543,7 +452,7 @@ class Bitcoin():
                     reasons.append("RSI>70")
                 exit_reason = "/".join(reasons)
 
-                print(self.df.index[i], "❌ LONG EXIT", exit_price,
+                print(self.df.index[-1], "❌ LONG EXIT", exit_price,
                     "| PnL:", round(pnl_pct,2), "%", "| Reason:", exit_reason)
                 print("CUM:", round(self.cummulative_profit,2), "%\n")
 
@@ -551,10 +460,10 @@ class Bitcoin():
                 self.position = None
 
         if self.entry == "SHORT":
-            close = self.df["close"].iloc[i]
+            close = self.df["close"].iloc[-1]
             tp_hit = close <= self.short_tp
             sl_hit = close >= self.short_sl
-            rsi_exit = self.df["rsi14"].iloc[i] < 100 - self.exit_rsi
+            rsi_exit = self.df["rsi14"].iloc[-1] < 100 - self.exit_rsi
 
             if tp_hit or sl_hit or rsi_exit:
                 exit_price = close
@@ -576,7 +485,7 @@ class Bitcoin():
                     reasons.append("RSI<30")
                 exit_reason = "/".join(reasons)
 
-                print(self.df.index[i], "❌ SHORT EXIT", exit_price,
+                print(self.df.index[-1], "❌ SHORT EXIT", exit_price,
                     "| PnL:", round(pnl_pct,2), "%", "| Reason:", exit_reason)
                 print("CUM:", round(self.cummulative_profit,2), "%\n")
 
@@ -584,31 +493,39 @@ class Bitcoin():
                 self.position = None
 
 
+        print(
+            f'| Greater: {self.macd_greater_long} {self.macd_greater_short} '
+            f'| Trend: {self.trend_side} '
+            f'| Long_K: {long_streak} '
+            f'| Short_K: {short_streak} '
+            f'| RSI: {round(self.df["rsi14"].iloc[-1],1)} '
+            F'| Status: Pre_1 = {self.Long_pre1 or self.Short_pre1} & Pre_2 = {self.Long_pre2 or self.Short_pre2}'
+        )
+
+
 bitcoin = Bitcoin()
 
 start_time = "2025-01-01 00:00:00"
 end_time   = "2026-02-26 10:00:00"
 symbol     = "BTCUSDT"
-'''
-bitcoin.df = bitcoin.get_history_klines(
-    symbol=symbol,
-    interval=Client.KLINE_INTERVAL_15MINUTE,
-    start_str=start_time,
-    end_str=end_time
-)
-#'''
 
-bitcoin.get_latest_klines()
-#bitcoin.add_ema(8)
-#bitcoin.add_ema(26)
-bitcoin.add_ema()
-bitcoin.add_sma()
-bitcoin.add_rsi(14)
-bitcoin.add_macd()
-bitcoin.add_macd_peak()
-bitcoin.add_volume_ma(10)
+while True:
+    try:
+        bitcoin.get_latest_klines()
+        #bitcoin.add_ema(8)
+        #bitcoin.add_ema(26)
+        bitcoin.add_ema()
+        bitcoin.add_sma()
+        bitcoin.add_rsi(14)
+        bitcoin.add_macd()
 
+        bitcoin.Strategy()
 
-bitcoin.Strategy()
+        time.sleep(30)
+    except KeyboardInterrupt:
+        break
+    except Exception as e:
+        print("ERROR:", e)
+        time.sleep(30)
 
 
